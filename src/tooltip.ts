@@ -1,5 +1,4 @@
 import { TFile } from 'obsidian';
-
 import { t } from './lang/helpers';
 import ReferenceList from './main';
 import clip from 'text-clipper';
@@ -9,10 +8,24 @@ export class TooltipManager {
   tooltip: HTMLDivElement;
   isHoveringTooltip = false;
   isScrollBound = false;
+  boundScroll: () => void;
+  previewDBTimer = 0;
+  previewDBTimerClose = 0;
 
   constructor(plugin: ReferenceList) {
     this.plugin = plugin;
     plugin.register(() => this.hideTooltip());
+  }
+
+  findLabelsInFile(file: TFile): string[] {
+    const content = app.vault.read(file);
+    const labelPattern = /\\label\{(.*?)\}/g;
+    const labels = [];
+    let match;
+    while ((match = labelPattern.exec(content)) !== null) {
+      labels.push(match[1]);
+    }
+    return labels;
   }
 
   showTooltip(el: HTMLSpanElement) {
@@ -23,49 +36,27 @@ export class TooltipManager {
     if (!el.dataset.source) return;
 
     const file = app.vault.getAbstractFileByPath(el.dataset.source);
-    if (!file && !(file instanceof TFile)) {
+    if (!file || !(file instanceof TFile)) {
       return;
     }
 
     el.win.clearTimeout(this.previewDBTimer);
     el.win.clearTimeout(this.previewDBTimerClose);
 
-    const keys = el.dataset.citekey.split('|');
-
+    const labels = this.findLabelsInFile(file as TFile);
     let content: DocumentFragment | HTMLElement = null;
 
-    if (el.dataset.noteIndex) {
-      content = createDiv();
-      const html = this.plugin.bibManager.getNoteForNoteIndex(
-        file as TFile,
-        el.dataset.noteIndex
-      );
-      content.append(...html);
-    } else {
-      for (const key of keys) {
-        const html = this.plugin.bibManager.getBibForCiteKey(
-          file as TFile,
-          key
-        ) as HTMLElement;
-
-        if (html) {
-          if (!content) content = createFragment();
-          if (keys.length > 1) {
-            let target = html.find('.csl-right-inline');
-            if (!target) target = html.find('.csl-entry');
-            if (!target) target = html;
-            const inner = target.innerHTML;
-            const clipped = clip(inner, 100, { html: true });
-            target.innerHTML = clipped;
-          }
-          content.append(html);
-        }
-      }
+    if (labels.length > 0) {
+      content = createFragment();
+      labels.forEach((label) => {
+        const labelDiv = createDiv();
+        labelDiv.setText(label);
+        content.append(labelDiv);
+      });
     }
 
-    const modClasses = this.plugin.settings.hideLinks ? ' collapsed-links' : '';
     const tooltip = (this.tooltip = el.doc.body.createDiv({
-      cls: `pwc-tooltip${modClasses}`,
+      cls: 'pwc-tooltip',
     }));
     const rect = el.getBoundingClientRect();
 
@@ -73,17 +64,11 @@ export class TooltipManager {
       return this.hideTooltip();
     }
 
-    if (this.plugin.settings.hideLinks) {
-      tooltip.addClass('collapsed-links');
-    }
-
     if (content) {
       tooltip.append(content);
     } else {
       tooltip.addClass('is-missing');
-      tooltip.createEl('em', {
-        text: t('No citation found for ') + el.dataset.citekey,
-      });
+      tooltip.createEl('em', { text: 'No labels found' });
     }
 
     tooltip.addEventListener('pointerover', () => {
@@ -93,10 +78,10 @@ export class TooltipManager {
       this.isHoveringTooltip = false;
     });
     tooltip.addEventListener('click', (evt) => {
-      if (evt.targetNode.instanceOf(HTMLElement)) {
+      if (evt.target instanceof HTMLElement) {
         if (
-          evt.targetNode.tagName === 'A' ||
-          evt.targetNode.hasClass('clickable-icon')
+          evt.target.tagName === 'A' ||
+          evt.target.classList.contains('clickable-icon')
         ) {
           this.hideTooltip();
         }
@@ -126,8 +111,6 @@ export class TooltipManager {
     el.win.addEventListener('scroll', this.boundScroll, { capture: true });
   }
 
-  boundScroll: () => void;
-
   hideTooltip() {
     this.isHoveringTooltip = false;
     this.isScrollBound = false;
@@ -137,8 +120,6 @@ export class TooltipManager {
     this.boundScroll = null;
   }
 
-  previewDBTimer = 0;
-  previewDBTimerClose = 0;
   bindPreviewTooltipHandler(el: HTMLElement) {
     el.addEventListener('pointerover', (evt) => {
       evt.view.clearTimeout(this.previewDBTimer);
@@ -153,7 +134,7 @@ export class TooltipManager {
       if (!this.tooltip) return;
       this.previewDBTimerClose = evt.view.setTimeout(() => {
         if (this.isHoveringTooltip) {
-          this.handleToolipHover();
+          this.handleTooltipHover();
         } else {
           this.hideTooltip();
         }
@@ -161,7 +142,7 @@ export class TooltipManager {
     });
   }
 
-  handleToolipHover() {
+  handleTooltipHover() {
     if (this.isHoveringTooltip) {
       const { tooltip } = this;
       const outhandler = (evt: PointerEvent) => {
@@ -170,7 +151,7 @@ export class TooltipManager {
           tooltip.removeEventListener('pointerout', outhandler);
           tooltip.removeEventListener('pointerenter', outhandler);
           if (this.isHoveringTooltip) {
-            this.handleToolipHover();
+            this.handleTooltipHover();
           } else {
             this.hideTooltip();
           }
@@ -199,8 +180,8 @@ export class TooltipManager {
         }
       },
       pointerover: (evt: PointerEvent) => {
-        const target = evt.targetNode;
-        if (target.instanceOf(HTMLElement)) {
+        const target = evt.target;
+        if (target instanceof HTMLElement) {
           const citekey = target.dataset.citekey;
           if (citekey) {
             evt.view.clearTimeout(dbOutTimer);
